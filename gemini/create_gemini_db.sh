@@ -7,6 +7,7 @@
 #
 # Dependencies:
 #   samtools/bgzip/tabix
+#   GNU parallel
 #   bcftools
 #   vt
 #   VEP and/or snpEff
