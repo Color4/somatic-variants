@@ -11,6 +11,8 @@ Creating a complete GEMINI database
 Querying an RCC GEMINI database
 ----------------
 
+NOTE: for script to run, your PYTHONPATH must include GEMINI; see `gemini/default_settings.sh` for an example.
+
 1. Modify settings/paths in `gemini/default_settings`
-2. Run `python /this/directory/gemini/rcc.py` to see options for filtering variants
-3. Example usage: `python /this/directory/gemini/rcc.py --min-allele-freq 0.01 --min-alt-depth 1 --min-depth 1 my_variants.db > output.txt`
+2. Run `PYTHONPATH=/path/to/gemini python /this/directory/gemini/rcc.py` to see options for filtering variants
+3. Example usage: `PYTHONPATH=/path/to/gemini python /this/directory/gemini/rcc.py --min-allele-freq 0.01 --min-alt-depth 1 --min-depth 1 my_variants.db > output.txt`
