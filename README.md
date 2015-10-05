@@ -15,4 +15,4 @@ NOTE: for script to run, your PYTHONPATH must include GEMINI; see `gemini/defaul
 
 1. Modify settings/paths in `gemini/default_settings`
 2. Run `PYTHONPATH=/path/to/gemini python /this/directory/gemini/rcc.py` to see options for filtering variants
-3. Example usage: `PYTHONPATH=/path/to/gemini python /this/directory/gemini/rcc.py --min-allele-freq 0.01 --min-alt-depth 1 --min-depth 1 my_variants.db > output.txt`
+3. Example usage: `PYTHONPATH=/path/to/gemini python /this/directory/gemini/rcc.py --min-allele-freq 0.05 --min-alt-depth 5 --min-depth 20 --sample-pattern tumor my_variants.db`
