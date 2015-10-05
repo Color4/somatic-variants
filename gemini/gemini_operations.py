@@ -15,7 +15,7 @@ from gemini import GeminiQuery
 # Default list of columns to include in query.
 DEFAULT_VAR_COLS = ["variant_id", "type", "gene", "chrom", "start", "ref", "alt", "HP", "num_het", \
                     "max_aaf_all", "impact", "impact_severity", "cosmic_ids", "rs_ids", \
-                    "sift_pred", "polyphen_pred"]
+                    "sift_pred", "polyphen_pred", "codon_change", "aa_change", "biotype"]
 COMMON_DATABASES = ["1kg", "exac", "esp"]
 DEFAULT_VARIANT_QUERY = "SELECT %s FROM variants" % ",".join(DEFAULT_VAR_COLS)
 
@@ -219,48 +219,114 @@ def get_genotypes_df(gemini_db, annotations, no_common=True, min_alt_depth=5, mi
 
     return df
 
-def get_somatic_vars_in_sample(gemini_db, annotations, sample_name, alt_depth=10, depth=50, hotspot_af=0.02, novel_af=0.10):
+def get_somatic_vars_in_sample(gemini_db, annotations, sample_name, no_common=True, min_alt_depth=5, min_depth=50, min_anno_af=0.02, min_novel_af=0.10):
     """
     Returns all somatic variants in a single sample.
     """
 
-    var_cols = ["variant_id", "chrom", "start", "ref", "alt", "gene", "cosmic_ids", "HP", "codon_change", "aa_change", "rs_ids", "impact"] + annotations
-    all_cols = ["sample"] + var_cols + ["genotype", "allele_freq", "alt_depth", "depth"]
+    # Get variants using lower allele frequency to ensure all relevant variants are fetched.
+    cols = DEFAULT_VAR_COLS + annotations
+    query = "SELECT %(cols)s, gts.%(sample)s, gt_alt_depths.%(sample)s, gt_depths.%(sample)s, gt_quals.%(sample)s FROM variants" % { 'cols': ','.join(cols), 'sample': sample_name }
+    gt_filter = "( gt_quals.%(sample)s >= %(min_af)f AND \
+                   gt_alt_depths.%(sample)s >= %(min_alt_depth)i AND \
+                   gt_depths.%(sample)s >= %(min_depth)i AND \
+                   (gt_types.%(sample)s == HET OR gt_types.%(sample)s == HOM_ALT) )" \
+                   % { 'sample': sample_name, 'min_af': min(min_anno_af, min_novel_af), 'min_alt_depth': min_alt_depth, 'min_depth': min_depth }
+    if no_common:
+        query += " WHERE max_aaf_all < 0.01"
 
-    # Get dataframe
-    query = "SELECT *, gts.%(sample)s, gt_depths.%(sample)s, gt_alt_depths.%(sample)s, gt_quals.%(sample)s FROM variants WHERE max_aaf_all < 0.01" % { 'sample': sample_name }
-    gt_filter = "gt_quals.%(sample)s >= %(hotspot_af)f AND \
-                 gt_alt_depths.%(sample)s >= %(alt_depth)i AND \
-                 gt_depths.%(sample)s >= %(depth)i AND \
-                 (gt_types.%(sample)s == HET OR gt_types.%(sample)s == HOM_ALT)" \
-                 % { 'sample': sample_name, 'hotspot_af': hotspot_af, 'alt_depth': alt_depth, 'depth': depth }
 
-    df = get_query_results(gemini_db, query, gt_filter=gt_filter, as_dataframe=True).convert_objects(convert_numeric=True)
+    all_vars = get_query_results(gemini_db, query, gt_filter=gt_filter, as_dataframe=True).convert_objects(convert_numeric=True)
 
     # Filter out 'REF/.' heterozygous.
-    df = df[df['gts.' + sample_name].str.endswith(('A', 'C', 'T', 'G'))]
+    all_vars = all_vars[ all_vars['gts.' + sample_name].str.endswith(('A', 'C', 'T', 'G')) ]
 
-    # Select annotation columns and count number of times each variant is annotated.
-    counts = df[ df[annotations] == 1].count(1)
+    # Get annotated vars.
+    anno_counts = all_vars[ all_vars[annotations] == 1].count(1)
+    annotated_vars = all_vars.loc[anno_counts[anno_counts > 0].index]
 
-    # Select variants that have one or more annotations.
-    annotated_vars = df.loc[counts[counts != 0].index]
-    #print annotated_vars
+    # Get novel vars.
+    novel_vars = all_vars[all_vars["gt_quals." + sample_name] >= min_novel_af]
 
-    # TODO: add novel variants to index.
+    combined_vars = pd.concat([annotated_vars, novel_vars])
+    combined_vars.drop_duplicates(inplace=True)
 
-    # Filter for somatic variants and select columns.
-    somatic_vars_subset_cols = annotated_vars[var_cols + \
-                                 ["gts." + sample_name, "gt_quals." + sample_name, "gt_alt_depths." + sample_name, "gt_depths." + sample_name]]
+    # Reduce to somatic.
+    somatic_vars = reduce_to_somatic(combined_vars)
+    #somatic_vars = combined_vars
 
     # Add sample column.
-    somatic_vars_subset_cols.insert(0, "sample", pd.Series())
-    somatic_vars_subset_cols["sample"] = sample_name
+    somatic_vars.insert(0, "sample", pd.Series())
+    somatic_vars["sample"] = sample_name
 
     # Rename columns to generic names.
-    somatic_vars_subset_cols.columns = all_cols
+    somatic_vars.columns = ["sample"] + cols + ["genotype", "alt_depth", "depth", "allele_freq"]
 
-    return somatic_vars_subset_cols
+    return somatic_vars
+
+
+# OLD code that uses two queries, one to get annotated variants and the other to get novel variants:
+# def get_somatic_vars_in_sample_old(gemini_db, annotations, sample_name, no_common=True, min_alt_depth=5, min_depth=50, min_anno_af=0.02, min_novel_af=0.10):
+#     """
+#     Returns all somatic variants in a single sample.
+#     """
+#
+#     cols = DEFAULT_VAR_COLS + annotations
+#
+#     def get_results(min_af, where_clauses):
+#         """
+#         Return variants using default query together with min_af and WHERE clauses.
+#         """
+#         query = "SELECT %(cols)s, gts.%(sample)s, gt_alt_depths.%(sample)s, gt_depths.%(sample)s, gt_quals.%(sample)s FROM variants" % { 'cols': ','.join(cols), 'sample': sample_name }
+#         gt_filter = "( gt_quals.%(sample)s >= %(min_af)f AND \
+#                        gt_alt_depths.%(sample)s >= %(min_alt_depth)i AND \
+#                        gt_depths.%(sample)s >= %(min_depth)i AND \
+#                        (gt_types.%(sample)s == HET OR gt_types.%(sample)s == HOM_ALT) )" \
+#                        % { 'sample': sample_name, 'min_af': min_af, 'min_alt_depth': min_alt_depth, 'min_depth': min_depth }
+#         if no_common:
+#             where_clauses.append("max_aaf_all < 0.01")
+#         if len(where_clauses) > 0:
+#             query += " WHERE " + " AND ".join(where_clauses)
+#
+#         return get_query_results(gemini_db, query, gt_filter=gt_filter, as_dataframe=True).convert_objects(convert_numeric=True)
+#
+#     # Get annotated variants.
+#     anno_clauses = [anno + "==1" for anno in annotations]
+#     annotated_vars = get_results(min_anno_af, anno_clauses)
+#
+#     # Get novel variants.
+#     novel_vars = get_results(min_novel_af, [])
+#
+#     # Merge annotated and novel vars.
+#     # FIXME: does not work with empty dataframes; maybe try concat + drop_duplicates?
+#     all_vars = pd.DataFrame.merge(annotated_vars, novel_vars, left_on="variant_id", right_on="variant_id", how="outer")
+#
+#     return annotated_vars, novel_vars
+#
+#     # Filter out 'REF/.' heterozygous.
+#     all_vars = all_vars[ all_vars['gts.' + sample_name].str.endswith(('A', 'C', 'T', 'G')) ]
+#
+#     # Reduce to somatic.
+#     somatic_vars = reduce_to_somatic(df)
+#
+#     # # Select annotation columns and count number of times each variant is annotated.
+#     # counts = df[ df[annotations] == 1].count(1)
+#     #
+#     # # Select variants that have one or more annotations.
+#     # annotated_vars = df.loc[counts[counts != 0].index]
+#     # #print annotated_vars
+#     #
+#     # # TODO: add novel variants to index.
+#     #
+#
+#     # Add sample column.
+#     somatic_vars.insert(0, "sample", pd.Series())
+#     somatic_vars["sample"] = sample_name
+#
+#     # Rename columns to generic names.
+#     somatic_vars.columns = ["sample"] + cols + ["genotype", "alt_depth", "depth", "allele_freq"]
+#
+#     return somatic_vars
 
 def get_somatic_vars_by_sample2(gemini_db, annotations, samples=None, hotspot_af=0.0):
     """

@@ -4,6 +4,7 @@ Operations specific to RCC analysis.
 
 import sys
 import re
+import time
 import argparse
 import itertools
 import pandas as pd
@@ -28,7 +29,7 @@ def get_replicates(gemini_db):
                               columns=["full_name", "sample", "plate", "tissue", "replicate"])
     return samples_df
 
-def print_variants_sample_pk(dataframe, annotations, samples=None):
+def print_variants_sample_pk(dataframe, annotations, joint_cols=None, samples=None):
     """
     Print variants in table with the sample as primary key, so each row denotes one genotype
     called in one sample.
@@ -38,7 +39,7 @@ def print_variants_sample_pk(dataframe, annotations, samples=None):
         samples = [col[4:] for col in list(dataframe.columns.values) if str(col).startswith("gts.")]
 
     # Columns to show.
-    cols = gem_ops.DEFAULT_VAR_COLS + annotations + ["S_and_N", "S_and_T", "T_and_N"]
+    cols = gem_ops.DEFAULT_VAR_COLS + annotations + joint_cols
 
     # Print header.
     print "\t".join(["sample", "id", "plate", "tissue", "allele_freq", "alt_depth", "depth"] + cols)
@@ -97,31 +98,66 @@ def print_variants_variant_pk(dataframe, samples=None):
                 [",".join(["%.0f" % ad for ad in variant[gt_alt_depths]])] + \
                 [",".join(["%.0f" % d for d in variant[gt_depths]])] )
 
-def add_cols(somatic_vars, samples):
+def add_joint_cols(somatic_vars, samples):
     """
-    Add columns to flag variants that are shared between samples.
+    Add columns to dataframe flag variants that are shared/joint between samples. Returns
+    names of columns added to dataframe.
     """
 
-    # Get column names.
-    serum_sample = samples[samples.tissue == 'S'].full_name.item()
-    tumor_sample = samples[samples.tissue == 'T'].full_name.item()
-    normal_sample = samples[samples.tissue == 'N'].full_name.item()
+    def joint_genotypes(variant, all_have_gt_samples=None, any_has_gt_samples=None, min_count=1):
+        """
+        Returns true for variant iff (a) all samples in all_have_gt_cols have a genotype and (b) at least min_count
+        samples in any_has_gt has genotype.
+        """
+
+        # Check (a) criterion.
+        all_have_gt = True
+        if all_have_gt_samples:
+            gt_quals = variant[["gt_quals." + sample for sample in all_have_gt_samples]]
+            all_have_gt = ( (gt_quals > 0).sum() ) == len(all_have_gt_samples)
+
+        # Check (b) criterion.
+        any_has_gt = True
+        if any_has_gt_samples:
+            gt_quals = variant[["gt_quals." + sample for sample in any_has_gt_samples]]
+            any_has_gt = ( (gt_quals > 0).sum() ) >= min_count
+
+        return all_have_gt and any_has_gt
+
+    # Get samples.
+    serum_samples = list(samples[samples.tissue == 'S'].full_name)
+    tumor_samples = list(samples[samples.tissue == 'T'].full_name)
+    normal_samples = list(samples[samples.tissue == 'N'].full_name)
     ffpe_samples = list(samples[samples.tissue == 'F'].full_name)
 
-    def all_samples_have_gt(row, cols=None):
-        """
-        Returns true iff all cols denote valid genotypes.
-        """
-        gt_quals = row[["gt_quals." + col for col in cols]]
-        return ( (gt_quals > 0).sum() ) == len(cols)
+    # Add columns to flag variants shared between samples.
+    # FIXME: there must be a function to replace these loops.
+    columns_added = []
+    for s, serum_sample in enumerate(serum_samples):
+        for t, tumor_sample in enumerate(tumor_samples):
+            for n, normal_sample in enumerate(normal_samples):
+                # S and N
+                # S and T
+                # T and N
+                # S, T, and N
+                sn_col = 'j_S%i_N%i' % (s, n)
+                st_col = 'j_S%i_T%i' % (s, t)
+                tn_col = 'j_T%i_N%i' % (t, n)
+                stn_col = 'j_S%iT%iN%i' % (s, t, n)
+                sf_col = 'j_S%iF' % (s)
+                stnf_col = 'j_S%iT%iN%iF' % (s, t, n)
+                somatic_vars[sn_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample, normal_sample])
+                somatic_vars[st_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample, tumor_sample])
+                somatic_vars[tn_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[tumor_sample, normal_sample])
+                somatic_vars[stn_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample, tumor_sample, normal_sample])
+                somatic_vars[sf_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample], \
+                                                          any_has_gt_samples=ffpe_samples)
+                somatic_vars[stnf_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample, tumor_sample, normal_sample], \
+                                                          any_has_gt_samples=ffpe_samples)
+                columns_added.extend([sn_col, st_col, tn_col, stn_col, sf_col, stnf_col])
 
-    # Add columns to flag variants shared between:
-    # S and N
-    # S and T
-    # T and N
-    somatic_vars['S_and_N'] = somatic_vars.apply(all_samples_have_gt, axis=1, cols=[serum_sample, normal_sample])
-    somatic_vars['S_and_T'] = somatic_vars.apply(all_samples_have_gt, axis=1, cols=[serum_sample, tumor_sample])
-    somatic_vars['T_and_N'] = somatic_vars.apply(all_samples_have_gt, axis=1, cols=[tumor_sample, normal_sample])
+
+    return columns_added
 
 if __name__ == "__main__":
     # Argument setup and parsing.
@@ -130,74 +166,52 @@ if __name__ == "__main__":
     parser.add_argument("--min-allele-freq", type=float, default=0.1, help="Allele frequency to use")
     parser.add_argument("--min-depth", type=int, default=50, help="Minimum depth to use")
     parser.add_argument("--min-alt-depth", type=int, default=5, help="Minimum alternate depth to use")
+    parser.add_argument("--sample-pattern", default=".*", help="Regular expression to use to select samples")
     args = parser.parse_args()
     gemini_db = args.gemini_db
     min_allele_freq = args.min_allele_freq
     min_depth = args.min_depth
     min_alt_depth = args.min_alt_depth
-
+    sample_pattern = args.sample_pattern
     annotations = ["TCGA_RCC"]
 
-    # Get genotypes datafame.
-    variants = gem_ops.get_genotypes_df(gemini_db, annotations, min_novel_af=min_allele_freq, \
-                                        min_anno_af=min_allele_freq, min_alt_depth=min_alt_depth, min_depth=min_depth)
+    # Output somatic variants.
+    samples = [sample for sample in gem_ops.get_samples(gemini_db) if re.search(sample_pattern, sample) > 0]
+    all_somatic = []
+    for sample in samples:
+        start = time.time()
+        somatic_vars = gem_ops.get_somatic_vars_in_sample(gemini_db, annotations, sample, \
+                                                          min_anno_af=min_allele_freq, min_novel_af=min_allele_freq, \
+                                                          min_alt_depth=min_alt_depth, min_depth=min_depth)
+        end = time.time()
+        all_somatic.append(somatic_vars)
+        print >> sys.stderr, sample, len(somatic_vars), end-start
 
-    # Keep only potentially somatic.
-    somatic_vars = gem_ops.reduce_to_somatic(variants)
+    # Combine all somatic variants together and add id, plate, tissue.
+    all_somatic_df = pd.concat(all_somatic)
+    all_somatic_df.reset_index(inplace=True, drop=True)
 
-    # Add columns with additional information.
-    add_cols(somatic_vars, get_replicates(gemini_db))
+    # Using sample column, create and populate columns for id, plate, tissue, and replicate.
+    sample_attrs = pd.DataFrame(list(all_somatic_df["sample"].apply(lambda s: split_id(s))), columns=["id", "plate", "tissue", "replicate"])
+    for i, col in enumerate(["id", "plate", "tissue", "replicate"]):
+        all_somatic_df.insert(i+1, col, pd.Series())
+        all_somatic_df[col] = sample_attrs[col]
 
-    # Print genotypes table.
-    print_variants_sample_pk(somatic_vars, annotations)
+    print all_somatic_df.to_csv(sep="\t", index=False, float_format='%.3f'),
 
+    #print all_somatic_df.groupby("gene").size()
 
-# This is OLD code not currently used:
-"""if __name__ == "__main__":
-    gemini_db = sys.argv[1]
-    #rvn.print_replicate_tables2(gemini_db, ["TCGA_RCC"], get_replicates)
-
-    # Get somatic variants with replicates in order.
-    replicates = sorted( get_replicates(gemini_db, flatten=True) )
-    somatic_vars_by_sample = gem_ops.get_somatic_vars_by_sample2(gemini_db, ["TCGA_RCC"], hotspot_af=0.0, samples=replicates)
-    somatic_vars_by_sample[["variant_id", "start"]].astype(int)
-
-    for somatic_df in [ somatic_vars_by_sample ]:
-        print "********************************* "
-
-        # Print stats.
-
-        print '\t'.join(["Tissue", "Count", "Min", "Max", "Mean", "Median"])
-        for tissue in TISSUE_IDS:
-            rows_ew = somatic_df["sample"].str.endswith(tissue)
-            tissue_rows = somatic_df.loc[rows_ew[rows_ew == True].index]
-            stats = ["%.3f" % s for s in [tissue_rows['allele_freq'].min(), tissue_rows['allele_freq'].max(), tissue_rows['allele_freq'].mean(), tissue_rows['allele_freq'].median()] ]
-            print '\t'.join([tissue, str(len(tissue_rows))] + stats)
-
-        # Print somatic variants.
-        output_file = open("somatic_sample_pk.txt", 'w')
-        print somatic_df.to_string(buf=output_file, index=False)
-        print somatic_df.to_string(index=False)
-        output_file.close()
-
-        # Print gene counts.
-        print somatic_df['gene'].value_counts()
-
-        # Print information about each variant: gene, chrom, start, and genotype information.
-        output_file = open("somatic_variant_pk.txt", "w")
-        temp = sys.stdout
-        with output_file as sys.stdout:
-            print_variants_table(somatic_df)
-        output_file.close()
-        sys.stdout = temp
-        print_variants_table(somatic_df)
-
-        print ""
-        print "Variants shared in replicates"
-        replicates = get_replicates(gemini_db)
-        for id in sorted( replicates.keys() ):
-            reps = replicates[id]
-            print ""
-            print '**** ', id, ','.join(reps)
-            print print_variants_table( somatic_df[somatic_df["sample"].isin(reps)] )
-"""
+    # OLD: do everything in one big dataframe; this doesn't work with large numbers of variants/samples.
+    #
+    # # Get genotypes datafame.
+    # variants = gem_ops.get_genotypes_df(gemini_db, annotations, min_novel_af=min_allele_freq, \
+    #                                     min_anno_af=min_allele_freq, min_alt_depth=min_alt_depth, min_depth=min_depth)
+    #
+    # # Keep only potentially somatic.
+    # somatic_vars = gem_ops.reduce_to_somatic(variants)
+    #
+    # # Add columns with additional information.
+    # joint_cols = add_joint_cols(somatic_vars, get_replicates(gemini_db))
+    #
+    # # Print genotypes table.
+    # print_variants_sample_pk(somatic_vars, annotations, joint_cols=joint_cols)
