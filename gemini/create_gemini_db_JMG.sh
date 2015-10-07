@@ -71,13 +71,19 @@ perl ${ANNOTATOR_DIR}/variant_effect_predictor.pl \
     --biotype \
     --total_length \
     --vcf \
-    --fields Consequence,BIOTYPE,IMPACT,Codons,Amino_acids,Protein_position,EXON,PolyPhen,SIFT,Gene,Feature,SYMBOL
-
-# Set up name for annotated VCF.
-ANNO_VCF="${BASE}.anno.vcf"
+    --refseq \
+    --fields Consequence,BIOTYPE,IMPACT,Codons,CDS_position,Amino_acids,Protein_position,EXON,PolyPhen,SIFT,Gene,Feature,SYMBOL
 
 # reorder VEP annotations; change 'AF' to 'GQ'
-perl VEPtoGemini.pl $TEMP_VCF $ANNO_VCF -gq
+TEMP_VCF2="${BASE}.anno.vcf.temp2"
+perl VEPtoGemini.pl $TEMP_VCF $TEMP_VCF2 -gq
+
+# add gene SYMBOL and HGVS annotations
+bed=primers0.bed    # need BED file for gene symbols
+ANNO_VCF="${BASE}.anno.vcf"
+perl addHGVS.pl $TEMP_VCF2 $bed $ANNO_VCF
+
+rm $TEMP_VCF $TEMP_VCF2
 
 # Load into GEMINI.
 gemini load -v $ANNO_VCF -t ${ANNOTATOR} ${GEMINI_DB}

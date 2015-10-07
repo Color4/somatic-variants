@@ -39,33 +39,32 @@ my %rank = ("MODIFIER" => 0, "LOW" => 1,
   "MODERATE" => 2, "HIGH" => 3);
 
 # indexes of CSQ annotation fields
-my $imp = -1; my $pph = -1; my $sft = -1;
+my $imp = -1; my $pph; my $sft;
 
 # parse VCF
 while (my $line = <IN>) {
+
   if (substr($line, 0, 1) eq '#') {
 
-    # print header lines
+    # change 'AF' to 'GQ'
     if ($gq && $line =~ m/ID=AF/) {
       $line =~ s/AF/GQ/;
     }
-    print OUT $line;
 
     # load positions of fields for CSQ annotation
     if ($line =~ m/CSQ.*Format: /) {
       my @spl = split(/\|/, substr($', 0, -3));
-      for (my $x = 0; $x < scalar @spl; $x++) {
-        $imp = $x if ($spl[$x] eq "IMPACT");
-        $pph = $x if ($spl[$x] eq "PolyPhen");
-        $sft = $x if ($spl[$x] eq "SIFT");
-      }
-      die "Error! Cannot find 'IMPACT' in CSQ header\n" if ($imp == -1);
-      die "Error! Cannot find 'PolyPhen' in CSQ header\n" if ($pph == -1);
-      die "Error! Cannot find 'SIFT' in CSQ header\n" if ($sft == -1);
+      $imp = getIdx("IMPACT", @spl);
+      $pph = getIdx("PolyPhen", @spl);
+      $sft = getIdx("SIFT", @spl);
     }
 
+    print OUT $line;
     next;
   }
+
+  die "Error! Cannot find CSQ format header in $ARGV[0]\n"
+    if ($imp == -1);
 
   chomp $line;
   my @spl = split("\t", $line);
@@ -120,3 +119,16 @@ while (my $line = <IN>) {
 
 close IN;
 close OUT;
+
+# return array index for item
+sub getIdx {
+  my $tag = shift @_;
+  my @arr = @_;
+  my $x;
+  for ($x = 0; $x < scalar @arr; $x++) {
+    last if ($tag eq $arr[$x]);
+  }
+  die "Error! Cannot find $tag in CSQ field\n"
+    if ($x == scalar @arr);
+  return $x;
+}
