@@ -76,12 +76,12 @@ perl ${ANNOTATOR_DIR}/variant_effect_predictor.pl \
 
 # reorder VEP annotations; change 'AF' to 'GQ'
 TEMP_VCF2="${BASE}.anno.vcf.temp2"
-perl VEPtoGemini.pl $TEMP_VCF $TEMP_VCF2 -gq
+perl ${HOME_DIR}/VEPtoGemini.pl $TEMP_VCF $TEMP_VCF2 -gq
 
 # add gene SYMBOL and HGVS annotations
-bed=primers0.bed    # need BED file for gene symbols
+bed=${HOME_DIR}/primers0.bed    # need BED file for gene symbols
 ANNO_VCF="${BASE}.anno.vcf"
-perl addHGVS.pl $TEMP_VCF2 $bed $ANNO_VCF
+perl ${HOME_DIR}/addHGVS.pl $TEMP_VCF2 $bed $ANNO_VCF
 
 rm $TEMP_VCF $TEMP_VCF2
 
