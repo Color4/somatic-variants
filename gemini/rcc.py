@@ -164,7 +164,7 @@ def add_joint_cols(somatic_vars):
                     # S and F
                     sf_col = 'j_S%iF' % (s)
                     somatic_vars.loc[var_group.index, sf_col] = joint_genotypes(var_group, all_have_gt_samples=[serum_sample], any_has_gt_samples=ffpe_samples)
-                    
+
                     for t, tumor_sample in enumerate(tumor_samples):
                         # T and N
                         # S and T
@@ -189,56 +189,68 @@ def add_joint_cols(somatic_vars):
 if __name__ == "__main__":
     # Argument setup and parsing.
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("gemini_db", help="Gemini database to use")
-    parser.add_argument("--min-allele-freq", type=float, default=0.1, help="Allele frequency to use")
-    parser.add_argument("--min-depth", type=int, default=50, help="Minimum depth to use")
+    parser.add_argument("operation", help="Operation to perform")
+    parser.add_argument("--gemini-db", help="Gemini database to use")
+    parser.add_argument("--min-allele-freq", type=float, default=0.05, help="Allele frequency to use")
+    parser.add_argument("--min-depth", type=int, default=20, help="Minimum depth to use")
     parser.add_argument("--min-alt-depth", type=int, default=5, help="Minimum alternate depth to use")
     parser.add_argument("--sample-pattern", default=".*", help="Regular expression to use to select samples")
+    parser.add_argument("--annotations", default="TCGA_RCC", help="Annotations to use as hotspots")
+    parser.add_argument("--results-file", default="", help="File of raw somatic results")
     args = parser.parse_args()
+
     gemini_db = args.gemini_db
+    operation = args.operation
     min_allele_freq = args.min_allele_freq
     min_depth = args.min_depth
     min_alt_depth = args.min_alt_depth
     sample_pattern = args.sample_pattern
-    annotations = ["TCGA_RCC"]
+    annotations = args.annotations.split(",")
+    results_file = args.results_file
 
-    # Output somatic variants.
-    samples = [sample for sample in gem_ops.get_samples(gemini_db) if re.search(sample_pattern, sample) > 0]
-    all_somatic = []
-    for sample in samples:
-        start = time.time()
-        somatic_vars = gem_ops.get_somatic_vars_in_sample(gemini_db, annotations, sample, \
-                                                          min_anno_af=min_allele_freq, min_novel_af=min_allele_freq, \
-                                                          min_alt_depth=min_alt_depth, min_depth=min_depth)
-        end = time.time()
-        all_somatic.append(somatic_vars)
-        print >> sys.stderr, sample, len(somatic_vars), end-start
+    if operation == "find_somatic":
+        # Output somatic variants.
+        samples = [sample for sample in gem_ops.get_samples(gemini_db) if re.search(sample_pattern, sample) > 0]
+        print >> sys.stderr, "Samples to process: ", ", ".join(samples)
+        all_somatic = []
+        for sample in samples:
+            start = time.time()
+            somatic_vars = gem_ops.get_somatic_vars_in_sample(gemini_db, annotations, sample, \
+                                                              min_anno_af=min_allele_freq, min_novel_af=min_allele_freq, \
+                                                              min_alt_depth=min_alt_depth, min_depth=min_depth)
+            end = time.time()
+            all_somatic.append(somatic_vars)
+            print >> sys.stderr, sample, len(somatic_vars), end-start
 
-    # Combine all somatic variants together and add id, plate, tissue.
-    all_somatic_df = pd.concat(all_somatic)
-    all_somatic_df.reset_index(inplace=True, drop=True)
+        # Combine all somatic variants together and add id, plate, tissue.
+        all_somatic_df = pd.concat(all_somatic)
+        all_somatic_df.reset_index(inplace=True, drop=True)
 
-    # Using sample column, create and populate columns for id, plate, tissue, and replicate.
-    sample_attrs = pd.DataFrame(list(all_somatic_df["sample"].apply(lambda s: split_id(s))), columns=["id", "plate", "tissue", "replicate"])
-    for i, col in enumerate(["id", "plate", "tissue", "replicate"]):
-        all_somatic_df.insert(i+1, col, pd.Series())
-        all_somatic_df[col] = sample_attrs[col]
+        # Using sample column, create and populate columns for id, plate, tissue, and replicate.
+        sample_attrs = pd.DataFrame(list(all_somatic_df["sample"].apply(lambda s: split_id(s))), columns=["id", "plate", "tissue", "replicate"])
+        for i, col in enumerate(["id", "plate", "tissue", "replicate"]):
+            all_somatic_df.insert(i+1, col, pd.Series())
+            all_somatic_df[col] = sample_attrs[col]
 
-    print all_somatic_df.to_csv(sep="\t", index=False, float_format='%.3f'),
+        print all_somatic_df.to_csv(sep="\t", index=False, float_format='%.3f'),
 
-    #print all_somatic_df.groupby("gene").size()
+    elif operation == "augment_somatic":
+        # Read results into dataframe.
+        results_df = gem_ops.convert_cols( pd.read_csv(results_file, sep="\t") )
 
-    # OLD: do everything in one big dataframe; this doesn't work with large numbers of variants/samples.
-    #
-    # # Get genotypes datafame.
-    # variants = gem_ops.get_genotypes_df(gemini_db, annotations, min_novel_af=min_allele_freq, \
-    #                                     min_anno_af=min_allele_freq, min_alt_depth=min_alt_depth, min_depth=min_depth)
-    #
-    # # Keep only potentially somatic.
-    # somatic_vars = gem_ops.reduce_to_somatic(variants)
-    #
-    # # Add columns with additional information.
-    # joint_cols = add_joint_cols(somatic_vars, get_replicates(gemini_db))
-    #
-    # # Print genotypes table.
-    # print_variants_sample_pk(somatic_vars, annotations, joint_cols=joint_cols)
+        # Update num_het, add num_het_by_id
+        results_df = gem_ops.update_num_het(results_df)
+        results_df = gem_ops.update_num_het_by_id(results_df)
+
+        # Add joint columns.
+        results_df = add_joint_cols(results_df)
+
+        # Output sample statistics.
+        #print results_df.groupby(["sample"]).size()
+
+        #vhl_muts = results_df[(results_df["gene"] == "VHL") & (results_df["alt_depth"] > 10) & (results_df["depth"] > 40)]
+        # for tissue, name in TISSUES.items():
+        #     print name, len(vhl_muts[vhl_muts["tissue"] == tissue]["sample"].unique())
+        #print vhl_muts.to_csv(sep="\t", index=False),
+
+        print results_df.to_csv(sep="\t", index=False),
