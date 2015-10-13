@@ -15,7 +15,10 @@ from gemini import GeminiQuery
 # Default list of columns to include in query.
 DEFAULT_VAR_COLS = ["variant_id", "type", "gene", "chrom", "start", "ref", "alt", "HP", "num_het", \
                     "max_aaf_all", "impact", "impact_severity", "cosmic_ids", "rs_ids", \
-                    "sift_pred", "polyphen_pred", "codon_change", "aa_change", "biotype"]
+                    "sift_pred", "polyphen_pred", "codon_change", "aa_change", "biotype",
+                    "transcript", "vep_hgvsc", "vep_hgvsp"]
+INT_COLS = ["variant_id", "start", "HP", "num_het", "alt_depth", "depth", "TCGA_RCC"]
+FLOAT_COLS = ["allele_freq", "max_aaf_all"]
 COMMON_DATABASES = ["1kg", "exac", "esp"]
 DEFAULT_VARIANT_QUERY = "SELECT %s FROM variants" % ",".join(DEFAULT_VAR_COLS)
 
@@ -128,6 +131,14 @@ def get_hotspot_variants(annotation, allele_bal=0.02):
 # ********
 # Variant dataframe functions.
 # ********
+
+def convert_cols(variants_dataframe):
+    """
+    Convert variant columns to int/float as needed.
+    """
+    variants_dataframe[INT_COLS] = variants_dataframe[INT_COLS].astype(int)
+    variants_dataframe[FLOAT_COLS] = variants_dataframe[FLOAT_COLS].astype(float)
+    return variants_dataframe
 
 def add_gt_attrs_cols(variants_dataframe):
     """
@@ -437,6 +448,30 @@ def clear_genotypes(vars_df, samples, match_fn=None):
         vars_df.loc[index, 'gts.' + sample] = './.'
 
     return vars_df
+
+def update_num_het(var_sample_df):
+    """
+    Update num_het column in dataframe to reflect the number of occurences of the variant
+    in the dataframe.
+    """
+
+    for name, group in var_sample_df.groupby("variant_id"):
+        var_sample_df.loc[group.index, 'num_het'] = len(group)
+
+    return var_sample_df
+
+def update_num_het_by_id(var_sample_df):
+    """
+    Update num_het_by_id column in dataframe. The value in this column is the number of
+    unique IDs that share a variant.
+    """
+    var_sample_df["num_het_by_id"] = 0
+
+    for name, group in var_sample_df.groupby(["variant_id"]):
+        var_sample_df.loc[group.index, "num_het_by_id"] = len(group["id"].unique())
+
+    return var_sample_df
+
 
 def reduce_to_somatic(vars_df):
     """

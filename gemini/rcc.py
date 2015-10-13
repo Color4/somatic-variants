@@ -98,13 +98,13 @@ def print_variants_variant_pk(dataframe, samples=None):
                 [",".join(["%.0f" % ad for ad in variant[gt_alt_depths]])] + \
                 [",".join(["%.0f" % d for d in variant[gt_depths]])] )
 
-def add_joint_cols(somatic_vars, samples):
+def add_joint_cols(somatic_vars):
     """
     Add columns to dataframe flag variants that are shared/joint between samples. Returns
     names of columns added to dataframe.
     """
 
-    def joint_genotypes(variant, all_have_gt_samples=None, any_has_gt_samples=None, min_count=1):
+    def joint_genotypes(variant_df, all_have_gt_samples=None, any_has_gt_samples=None, min_count=1):
         """
         Returns true for variant iff (a) all samples in all_have_gt_cols have a genotype and (b) at least min_count
         samples in any_has_gt has genotype.
@@ -112,52 +112,79 @@ def add_joint_cols(somatic_vars, samples):
 
         # Check (a) criterion.
         all_have_gt = True
-        if all_have_gt_samples:
-            gt_quals = variant[["gt_quals." + sample for sample in all_have_gt_samples]]
-            all_have_gt = ( (gt_quals > 0).sum() ) == len(all_have_gt_samples)
+        if all_have_gt_samples != None:
+            all_have_gt = len(variant_df[variant_df["sample"].isin(all_have_gt_samples)]) == len(all_have_gt_samples)
 
         # Check (b) criterion.
         any_has_gt = True
-        if any_has_gt_samples:
-            gt_quals = variant[["gt_quals." + sample for sample in any_has_gt_samples]]
-            any_has_gt = ( (gt_quals > 0).sum() ) >= min_count
+        if any_has_gt_samples != None:
+            any_has_gt = len(variant_df[variant_df["sample"].isin(any_has_gt_samples)]) >= min_count
 
         return all_have_gt and any_has_gt
 
-    # Get samples.
-    serum_samples = list(samples[samples.tissue == 'S'].full_name)
-    tumor_samples = list(samples[samples.tissue == 'T'].full_name)
-    normal_samples = list(samples[samples.tissue == 'N'].full_name)
-    ffpe_samples = list(samples[samples.tissue == 'F'].full_name)
-
-    # Add columns to flag variants shared between samples.
-    # FIXME: there must be a function to replace these loops.
-    columns_added = []
-    for s, serum_sample in enumerate(serum_samples):
-        for t, tumor_sample in enumerate(tumor_samples):
-            for n, normal_sample in enumerate(normal_samples):
-                # S and N
-                # S and T
-                # T and N
-                # S, T, and N
+    # Add columns for joint variants.
+    # NOTE: should set max serum/tumor/normal by looking at data frame and grouping
+    # by ID + tissue.
+    num_serum_samples = 2
+    num_tumor_samples = 2
+    num_normal_samples = 2
+    for s in range(num_serum_samples):
+        for t in range(num_tumor_samples):
+            for n in range(num_normal_samples):
                 sn_col = 'j_S%i_N%i' % (s, n)
                 st_col = 'j_S%i_T%i' % (s, t)
                 tn_col = 'j_T%i_N%i' % (t, n)
                 stn_col = 'j_S%iT%iN%i' % (s, t, n)
                 sf_col = 'j_S%iF' % (s)
                 stnf_col = 'j_S%iT%iN%iF' % (s, t, n)
-                somatic_vars[sn_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample, normal_sample])
-                somatic_vars[st_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample, tumor_sample])
-                somatic_vars[tn_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[tumor_sample, normal_sample])
-                somatic_vars[stn_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample, tumor_sample, normal_sample])
-                somatic_vars[sf_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample], \
-                                                          any_has_gt_samples=ffpe_samples)
-                somatic_vars[stnf_col] = somatic_vars.apply(joint_genotypes, axis=1, all_have_gt_samples=[serum_sample, tumor_sample, normal_sample], \
-                                                          any_has_gt_samples=ffpe_samples)
-                columns_added.extend([sn_col, st_col, tn_col, stn_col, sf_col, stnf_col])
+                somatic_vars[sn_col] = False
+                somatic_vars[st_col] = False
+                somatic_vars[tn_col] = False
+                somatic_vars[stn_col] = False
+                somatic_vars[sf_col] = False
+                somatic_vars[stnf_col] = False
 
+    for an_id, id_vars in somatic_vars.groupby("id"):
+        # Get samples.
+        serum_samples = list(id_vars[id_vars.tissue == 'S']['sample'].unique())
+        tumor_samples = list(id_vars[id_vars.tissue == 'T']['sample'].unique())
+        normal_samples = list(id_vars[id_vars.tissue == 'N']['sample'].unique())
+        ffpe_samples = list(id_vars[id_vars.tissue == 'F']['sample'].unique())
 
-    return columns_added
+        # Add columns to flag variants shared between samples.
+        # FIXME: there must be a function to replace these loops.
+        columns_added = []
+        for variant_id, var_group in id_vars.groupby("variant_id"):
+            for n, normal_sample in enumerate(normal_samples):
+                for s, serum_sample in enumerate(serum_samples):
+                    # S and N
+                    sn_col = 'j_S%i_N%i' % (s, n)
+                    somatic_vars.loc[var_group.index, sn_col] = joint_genotypes(var_group, all_have_gt_samples=[serum_sample, normal_sample])
+
+                    # S and F
+                    sf_col = 'j_S%iF' % (s)
+                    somatic_vars.loc[var_group.index, sf_col] = joint_genotypes(var_group, all_have_gt_samples=[serum_sample], any_has_gt_samples=ffpe_samples)
+                    
+                    for t, tumor_sample in enumerate(tumor_samples):
+                        # T and N
+                        # S and T
+                        # S, T, and N
+                        # S, T, N, and F
+                        tn_col = 'j_T%i_N%i' % (t, n)
+                        st_col = 'j_S%i_T%i' % (s, t)
+                        stn_col = 'j_S%iT%iN%i' % (s, t, n)
+                        stnf_col = 'j_S%iT%iN%iF' % (s, t, n)
+                        somatic_vars.loc[var_group.index, st_col] = joint_genotypes(var_group, all_have_gt_samples=[serum_sample, tumor_sample])
+                        somatic_vars.loc[var_group.index, tn_col] = joint_genotypes(var_group, all_have_gt_samples=[tumor_sample, normal_sample])
+                        somatic_vars.loc[var_group.index, stn_col] = joint_genotypes(var_group, all_have_gt_samples=[serum_sample, normal_sample, tumor_sample])
+                        somatic_vars.loc[var_group.index, stnf_col] = joint_genotypes(var_group, all_have_gt_samples=[serum_sample, tumor_sample, normal_sample], any_has_gt_samples=ffpe_samples)
+
+                if len(serum_samples) == 0:
+                    for t, tumor_sample in enumerate(tumor_samples):
+                        tn_col = 'j_T%i_N%i' % (t, n)
+                        somatic_vars.loc[var_group.index, tn_col] = joint_genotypes(var_group, all_have_gt_samples=[tumor_sample, normal_sample])
+
+    return somatic_vars
 
 if __name__ == "__main__":
     # Argument setup and parsing.
