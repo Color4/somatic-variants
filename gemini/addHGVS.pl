@@ -103,125 +103,134 @@ while (my $line = <IN>) {
 
     } elsif ($cut[0] eq "CSQ") {
 
-      # check first annotation
+      # get gene name
+      my $gene = "";
+      if (! exists $reg{"$spl[0]\t$spl[1]"}) {
+        print "Warning! Unknown gene for variant at $spl[0], $spl[1]\n";
+      }
+      $gene = $reg{"$spl[0]\t$spl[1]"};
+
+      # adjust annotations
       my @zap = split(',', $cut[1]);
-      my @arr = split(/\|/, $zap[0]);
+      for (my $z = 0; $z < scalar @zap; $z++) {
+        my @arr = split(/\|/, $zap[$z]);
 
-      # fill in gene name
-      if (scalar @arr == $sym || $arr[$sym] eq "") {
-        die "Unknown gene for variant at $spl[0], $spl[1]\n"
-          if (! exists $reg{"$spl[0]\t$spl[1]"});
-        $arr[$sym] = $reg{"$spl[0]\t$spl[1]"};
-      }
-
-      # construct HGVSc
-      my $hgc = "";
-      if ($arr[$cod]) {
-        $hgc = "c.";
-        my @br1 = split(/\//, $arr[$cpos]);
-        my $cp = $arr[$cod];
-        $cp =~ tr/a-z//d;
-        my @br2 = split(/\//, $cp);
-        die "Error! Cannot parse nt change in variant:\n$line\n"
-          if (scalar @br1 < 2 || (scalar @br2 < 2 && (! $del)));
-
-        # insertion
-        if ($ins) {
-          $br1[0] =~ tr/-/_/;
-          $hgc .= "$br1[0]ins$br2[1]";
-
-        # deletion
-        } elsif ($del) {
-          $br1[0] =~ tr/-/_/;
-          $hgc .= "$br1[0]del$br2[0]";
-
-        # substitution
-        } else {
-          $hgc .= "$br1[0]$br2[0]>$br2[1]";
+        # fill in gene name
+        if (scalar @arr == $sym || $arr[$sym] eq "") {
+          $arr[$sym] = $gene;
         }
-      }
 
-      # construct HGVSp
-      my $hgp = "";
-      my @ab1 = split(/\//, $arr[$ami]);
-      if (scalar @ab1 > 1) {
-        $hgp = "p.";
-        my @ab2 = split(/\//, $arr[$ppos]);
+        # construct HGVSc
+        my $hgc = "";
+        if ($arr[$cod]) {
+          $hgc = "c.";
+          my @br1 = split(/\//, $arr[$cpos]);
+          my $cp = $arr[$cod];
+          $cp =~ tr/a-z//d;
+          my @br2 = split(/\//, $cp);
+          die "Error! Cannot parse nt change in variant:\n$line\n"
+            if (scalar @br1 < 2 || (scalar @br2 < 2 && (! $del)));
 
-        # insertion
-        if ($ins) {
-          my $ch = "ins";
-          my @zz = split('-', $ab2[0]);
-          if ($ab1[1] =~ m/X/) {
-            # frameshift
-            my $base = substr($ab1[0], 0, 1);
-            $base = '?' if ($base eq '-');
-            $hgp .= $base . "$zz[0]fs";
+          # insertion
+          if ($ins) {
+            $br1[0] =~ tr/-/_/;
+            $hgc .= "$br1[0]ins$br2[1]";
+
+          # deletion
+          } elsif ($del) {
+            $br1[0] =~ tr/-/_/;
+            $hgc .= "$br1[0]del$br2[0]";
+
+          # substitution
           } else {
-            if ($ab1[0] ne '-') {
-              # extra residues in annotation
-              if ($ab1[0] ne substr($ab1[1], 0, length $ab1[0])) {
-                if ($ab1[0] ne substr($ab1[1], -length $ab1[0])) {
-                  $ch = "delins";  # mixed deletion-insertion
+            $hgc .= "$br1[0]$br2[0]>$br2[1]";
+          }
+        }
+
+        # construct HGVSp
+        my $hgp = "";
+        my @ab1 = split(/\//, $arr[$ami]);
+        if (scalar @ab1 > 1) {
+          $hgp = "p.";
+          my @ab2 = split(/\//, $arr[$ppos]);
+
+          # insertion
+          if ($ins) {
+            my $ch = "ins";
+            my @zz = split('-', $ab2[0]);
+            if ($ab1[1] =~ m/X/) {
+              # frameshift
+              my $base = substr($ab1[0], 0, 1);
+              $base = '?' if ($base eq '-');
+              $hgp .= $base . "$zz[0]fs";
+            } else {
+              if ($ab1[0] ne '-') {
+                # extra residues in annotation
+                if ($ab1[0] ne substr($ab1[1], 0, length $ab1[0])) {
+                  if ($ab1[0] ne substr($ab1[1], -length $ab1[0])) {
+                    $ch = "delins";  # mixed deletion-insertion
+                  } else {
+                    $ab1[1] = substr($ab1[1], 0, -length $ab1[0]);
+                  }
                 } else {
-                  $ab1[1] = substr($ab1[1], 0, -length $ab1[0]);
+                  $ab1[1] = substr($ab1[1], length $ab1[0]);
                 }
               } else {
-                $ab1[1] = substr($ab1[1], length $ab1[0]);
+                $ab1[0] = '?';
               }
-            } else {
-              $ab1[0] = '?';
-            }
-            if (scalar @zz > 1) {
-              $hgp .= "$ab1[0]$zz[0]_?$zz[1]$ch$ab1[1]";
-            } else {
-              $hgp .= "$ab1[0]$zz[0]$ch$ab1[1]";
-            }
-          }
-
-        # deletion
-        } elsif ($del) {
-          my $ch = "del";
-          my @zz = split('-', $ab2[0]);
-          if ($ab1[1] =~ m/X/) {
-            # frameshift
-            my $base = substr($ab1[0], 0, 1);
-            $base = '?' if ($base eq '-');
-            $hgp .= $base . "$zz[0]fs";
-          } else {
-            if ($ab1[1] ne '-') {
-              # extra residues in annotation
-              if ($ab1[1] ne substr($ab1[0], 0, length $ab1[1])) {
-                if ($ab1[1] ne substr($ab1[0], -length $ab1[1])) {
-                  $ch = "delins$ab1[1]";  # mixed deletion-insertion
-                } else {
-                  $ab1[0] = substr($ab1[0], 0, -length $ab1[1]);
-                  $zz[1] -= length $ab1[1];
-                }
+              if (scalar @zz > 1) {
+                $hgp .= "$ab1[0]$zz[0]_?$zz[1]$ch$ab1[1]";
               } else {
-                $ab1[0] = substr($ab1[0], length $ab1[1]);
-                $zz[0] += length $ab1[1];
+                $hgp .= "$ab1[0]$zz[0]$ch$ab1[1]";
               }
             }
-            if (length $ab1[0] > 1) {
-              # multiple-aa deletion
-              $hgp .= substr($ab1[0], 0, 1) . "$zz[0]_" .
-                substr($ab1[0], -1) . "$zz[1]$ch";
-            } else {
-              $hgp .= "$ab1[0]$zz[0]$ch";
-            }
-          }
 
-        # substitution
-        } else {
-          $hgp .= "$ab1[0]$ab2[0]$ab1[1]";
-          $hgp .= "ext*?" if ($ab1[0] eq '*');  # stop loss
+          # deletion
+          } elsif ($del) {
+            my $ch = "del";
+            my @zz = split('-', $ab2[0]);
+            if ($ab1[1] =~ m/X/) {
+              # frameshift
+              my $base = substr($ab1[0], 0, 1);
+              $base = '?' if ($base eq '-');
+              $hgp .= $base . "$zz[0]fs";
+            } else {
+              if ($ab1[1] ne '-') {
+                # extra residues in annotation
+                if ($ab1[1] ne substr($ab1[0], 0, length $ab1[1])) {
+                  if ($ab1[1] ne substr($ab1[0], -length $ab1[1])) {
+                    $ch = "delins$ab1[1]";  # mixed deletion-insertion
+                  } else {
+                    $ab1[0] = substr($ab1[0], 0, -length $ab1[1]);
+                    $zz[1] -= length $ab1[1];
+                  }
+                } else {
+                  $ab1[0] = substr($ab1[0], length $ab1[1]);
+                  $zz[0] += length $ab1[1];
+                }
+              }
+              if (length $ab1[0] > 1) {
+                # multiple-aa deletion
+                $hgp .= substr($ab1[0], 0, 1) . "$zz[0]_" .
+                  substr($ab1[0], -1) . "$zz[1]$ch";
+              } else {
+                $hgp .= "$ab1[0]$zz[0]$ch";
+              }
+            }
+
+          # substitution
+          } else {
+            $hgp .= "$ab1[0]$ab2[0]$ab1[1]";
+            $hgp .= "ext*?" if ($ab1[0] eq '*');  # stop loss
+          }
         }
+
+        # adjust annotation
+        $zap[$z] = join('|', @arr);
+        $zap[$z] .= "|$hgc|$hgp";
       }
 
       # print output
-      $zap[0] = join('|', @arr);
-      $zap[0] .= "|$hgc|$hgp";
       $cut[1] = join(',', @zap);
       $div[$x] = join('=', @cut);
       $spl[7] = join(';', @div);
