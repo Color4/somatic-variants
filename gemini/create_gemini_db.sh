@@ -9,7 +9,6 @@
 #   samtools/bgzip/tabix
 #   GNU parallel
 #   bcftools
-#   vt
 #   VEP and/or snpEff
 #   GEMINI
 #
@@ -32,7 +31,7 @@ REFERENCE=${3:-$DEFAULT_REFERENCE}
 ANNOTATOR=${4:-$DEFAULT_ANNOTATOR}
 ANNOTATOR_DIR=${5:-$DEFAULT_ANNOTATOR_DIR}
 CUSTOM_ANNOS_DIR=${6:-$DEFAULT_CUSTOM_ANNOS_DIR}
-
+VEP_FASTA=/Users/jeremy/.vep/homo_sapiens/79_GRCh37/
 
 # If there is a directory of VCFs, combine them into a VCF.
 CUR_DIR=${PWD}
@@ -45,8 +44,8 @@ if [ -d ${INPUT} ]; then
     # Compress and index VCFs.
     ${HOME_DIR}/bgzip_and_tabix.sh
 
-    # Merge VCFs.
-    bcftools merge *.vcf.gz > ${CUR_DIR}/all.vcf
+    # Merge VCFs into separate records.
+    bcftools merge -m none *.vcf.gz > ${CUR_DIR}/all.vcf
 
     # Input VCF is all VCFs in directory.
     INPUT_VCF=all.vcf
@@ -66,14 +65,11 @@ sed -i.bak 's/AF/GQ/g' all.vcf
 BASE=$(basename "${INPUT_VCF}" .vcf)
 ANNO_VCF="${BASE}.anno.vcf"
 
-# Normalize and split.
-vt decompose -s ${INPUT_VCF} | vt normalize -r ${REFERENCE} -o ${BASE}_decnorm.vcf -
-
-# Annotate.
+# Annotate. NOTE: using --refseq, VEP versions 80 and newer do not include GENE symbol.
 if [ ${ANNOTATOR} = "VEP" ]; then
-    # Can add --refseq to use refseq annotations.
-    perl ${ANNOTATOR_DIR}/variant_effect_predictor.pl -i ${BASE}_decnorm.vcf \
+    perl ${ANNOTATOR_DIR}/variant_effect_predictor.pl -i ${BASE}.vcf \
     --cache \
+    --refseq \
     --offline \
     --assembly GRCh37 \
     --sift b \
@@ -82,21 +78,23 @@ if [ ${ANNOTATOR} = "VEP" ]; then
     --numbers \
     --biotype \
     --total_length \
+    --hgvs \
+    --fasta ${VEP_FASTA} \
     -o ${ANNO_VCF} \
     --vcf \
-    --fields Consequence,Codons,Amino_acids,Gene,SYMBOL,Feature,EXON,PolyPhen,SIFT,Protein_position,BIOTYPE
+    --fields Consequence,Codons,Amino_acids,Gene,SYMBOL,Feature,EXON,PolyPhen,SIFT,Protein_position,BIOTYPE,HGVSc,HGVSp
 elif [ ${ANNOTATOR} = "snpEff" ]; then
-	java -jar ${ANNOTATOR_DIR}/snpEff.jar -i vcf -o vcf GRCh37.75 ${BASE}_decnorm.vcf > ${ANNO_VCF}
+	java -jar ${ANNOTATOR_DIR}/snpEff.jar -i vcf -o vcf GRCh37.75 ${BASE}.vcf > ${ANNO_VCF}
 fi
 
 # Load into GEMINI.
 gemini load -v ${ANNO_VCF} -t ${ANNOTATOR} ${GEMINI_DB}
 
 #
-# HACK specfic to cancer amplicons: annotate with HP field from VCF.
+# HACK specific to cancer amplicons: annotate with HP field from VCF.
 #
-bgzip ${BASE}_decnorm.vcf && tabix -p vcf ${BASE}_decnorm.vcf.gz
-gemini annotate -f ${BASE}_decnorm.vcf.gz -t integer -a extract -c HP -e HP -o first ${GEMINI_DB}
+bgzip ${BASE}.vcf && tabix -p vcf ${BASE}.vcf.gz
+gemini annotate -f ${BASE}.vcf.gz -t integer -a extract -c HP -e HP -o first ${GEMINI_DB}
 
 #
 # Add annotations to the database.
