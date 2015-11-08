@@ -10,6 +10,7 @@ import itertools
 import pandas as pd
 
 import gemini_operations as gem_ops
+from toyplot import Canvas, browser
 
 # Columns for output.
 DISPLAY_COLS = ["sample", "id", "plate", "tissue", "replicate"] + \
@@ -108,7 +109,7 @@ def print_variants_variant_pk(dataframe, samples=None):
                 [",".join(["%.0f" % d for d in variant[gt_depths]])] )
 
 
-def get_variants_in_samples(gemini_db, samples, annotations, min_allele_freq, min_alt_depth, min_depth, somatic=False):
+def get_variants_in_samples(gemini_db, samples, annotations, min_allele_freq, min_alt_depth, min_depth, max_aaf_all, somatic=False):
     """
     Returns a dataframe with variants from all samples.
     """
@@ -123,7 +124,7 @@ def get_variants_in_samples(gemini_db, samples, annotations, min_allele_freq, mi
     for sample in samples:
         start = time.time()
         sample_vars = get_vars_fn(gemini_db, annotations, sample, min_allele_freq=min_allele_freq,
-                                  min_alt_depth=min_alt_depth, min_depth=min_depth)
+                                  min_alt_depth=min_alt_depth, min_depth=min_depth, max_aaf_all=max_aaf_all)
         end = time.time()
         all_vars.append(sample_vars)
         print >> sys.stderr, sample, len(sample_vars), end-start
@@ -250,26 +251,28 @@ def add_joint_cols(somatic_vars):
 
     return somatic_vars
 
-def filter_and_augment_variants(vars_df, min_allele_freq, min_alt_depth, min_depth, max_num_het):
+def filter_and_augment_variants(vars_df, min_allele_freq, min_alt_depth, min_depth, max_num_het, tissue, add_joint_cols=True):
     """
     Filter and augment variants dataframe.
     """
 
     # Filter using allele freq, alt depth, and depth.
-    vars_df = vars_df[(vars_df.allele_freq >= min_allele_freq) & \
+    vars_df = vars_df[(vars_df.allele_freq >= min_allele_freq) &
                       (vars_df.alt_depth >= min_alt_depth) &
                       (vars_df.depth >= min_depth)]
 
-    # Update num_het, add num_het_by_id
+    # Update num_het, add num_het_by_id, germline
     vars_df = gem_ops.update_num_het(vars_df)
     vars_df = gem_ops.update_num_het_by_id(vars_df)
+    vars_df = gem_ops.update_germline(vars_df)
+    vars_df = gem_ops.update_mean_af(vars_df)
 
-    # Filter by max_num_het
-    vars_df = vars_df[vars_df.num_het <= max_num_het]
+    # Filter by max_num_het and tissue.
+    vars_df = vars_df[(vars_df.num_het <= max_num_het) & (vars_df.tissue).isin(tissue)]
 
     # Add joint columns.
-    vars_df = add_joint_cols(vars_df)
-    joint_cols = [col for col in vars_df.columns.values if col.startswith("j_")]
+    if add_joint_cols:
+        vars_df = add_joint_cols(vars_df)
 
     return vars_df
 
@@ -315,13 +318,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("operation", help="Operation to perform")
     parser.add_argument("--gemini-db", help="Gemini database to use")
-    parser.add_argument("--min-allele-freq", type=float, default=0.05, help="Allele frequency to use")
+    parser.add_argument("--min-allele-freq", type=float, default=0.02, help="Allele frequency to use")
+    parser.add_argument("--max-aaf-all", type=float, default=0.01, help="Maximum alternate allele frequency")
     parser.add_argument("--min-depth", type=int, default=20, help="Minimum depth to use")
     parser.add_argument("--min-alt-depth", type=int, default=5, help="Minimum alternate depth to use")
     parser.add_argument("--max-num-het", type=int, default=sys.maxint, help="Maximum number of observations")
+    parser.add_argument("--tissue", default="S,T,N,F", help="Filter for only these tissue")
     parser.add_argument("--sample-pattern", default=".*", help="Regular expression to use to select samples")
     parser.add_argument("--annotations", default="TCGA_RCC", help="Annotations to use as hotspots")
     parser.add_argument("--results-file", default="", help="File of raw somatic results")
+    parser.add_argument("--add-joint", action="store_true", help="File of raw somatic results")
+
     args = parser.parse_args()
 
     gemini_db = args.gemini_db
@@ -330,18 +337,21 @@ if __name__ == "__main__":
     min_depth = args.min_depth
     min_alt_depth = args.min_alt_depth
     max_num_het = args.max_num_het
+    max_aaf_all = args.max_aaf_all
+    tissue = args.tissue.split(",")
     sample_pattern = args.sample_pattern
     annotations = args.annotations.split(",")
     results_file = args.results_file
+    add_joint = args.add_joint
 
     if operation == "find_all":
-        # Get all variants.
+        # Get all variants in a set of samples.
 
         # Get samples to process.
         samples = [sample for sample in gem_ops.get_samples(gemini_db) if re.search(sample_pattern, sample) > 0]
 
         # Get sample variants.
-        all_vars_df = get_variants_in_samples(gemini_db, samples, annotations, min_allele_freq, min_alt_depth, min_depth, somatic=False)
+        all_vars_df = get_variants_in_samples(gemini_db, samples, annotations, min_allele_freq, min_alt_depth, min_depth, max_aaf_all, somatic=False)
 
         # Write results to file.
         if sample_pattern == ".*":
@@ -351,34 +361,92 @@ if __name__ == "__main__":
         out_file.write( all_vars_df.to_csv(sep="\t", index=False, float_format='%.3f') )
         out_file.close()
 
-    elif operation == "find_somatic":
-        # Get somatic variants.
-
-        # Get samples to process.
-        samples = [sample for sample in gem_ops.get_samples(gemini_db) if re.search(sample_pattern, sample) > 0]
-
-
-        all_somatic_df = get_variants_in_samples(gemini_db, samples, annotations, min_allele_freq, min_alt_depth, min_depth, somatic=True)
-
-        # Write results to file.
-        if sample_pattern == ".*":
-            sample_pattern = "all"
-        out_filename = "find_somatic_results_%s_minaf%.2f_ad%i_d%i.txt" % (sample_pattern, min_allele_freq, min_alt_depth, min_depth)
-        out_file = open(out_filename, "w")
-        out_file.write( all_somatic_df.to_csv(sep="\t", index=False, float_format='%.3f') )
-        out_file.close()
+        print "Wrote results to file %s" % out_filename
 
     elif operation == "augment_vars":
+        # Augment variants with updated and joint information.
+
         # Read results into dataframe.
         results_df = gem_ops.convert_cols( pd.read_csv(results_file, sep="\t") )
-        results_df = filter_and_augment_variants(results_df, min_allele_freq, min_alt_depth, min_depth, max_num_het)
+        results_df = filter_and_augment_variants(results_df, min_allele_freq, min_alt_depth, min_depth, max_num_het, tissue, add_joint_cols)
 
         # Print augmented results.
         augmented_out_file = open("augmented_" + results_file, "w")
         augmented_out_file.write(results_df.to_csv(sep="\t", index=False))
         augmented_out_file.close()
 
+        print "Wrote augmented variants to file %s" % augmented_out_file
+
         # Print joint variants.
-        joint_out_file = open("joint_" + results_file, "w")
-        print_joint_variants(results_df, joint_out_file, all_cols=True)
-        joint_out_file.close()
+        if add_joint:
+            joint_out_file = open("joint_" + results_file, "w")
+            print_joint_variants(results_df, joint_out_file, all_cols=True)
+            joint_out_file.close()
+
+        print "Wrote joint variants to file %s" % joint_out_file
+
+    elif operation == "sweeps":
+        # Perform sweeps using AF and DP/AD.
+
+        # Read results into dataframe.
+        results_df = gem_ops.convert_cols( pd.read_csv(results_file, sep="\t") )
+
+        # Remove artifacts and germline variants.
+        results_df = results_df[(results_df.HP <= 4) & (results_df.num_het <= 10) & (results_df.germline == False)]
+
+        # Sweep across allele frequency and depths and compute number of variants and number of samples showing a variant
+        # for each AF and DP.
+        genes = ["VHL", "PBRM1", "MUC4", "SETD2", "BAP1", "KDM5C"]
+        allele_freqs = [af/100.0 for af in range(2, 20)]
+        depths = range(10, 200, 30)
+        num_samples = len(results_df["sample"].unique())
+
+        for gene in genes:
+            canvas = Canvas(width=500, height=500)
+            axes = canvas.axes(label=gene, ymin=0)
+
+            gene_df = results_df[results_df.gene == gene]
+            for d in depths:
+                x = []
+                y = []
+                s = []
+                for af in allele_freqs:
+                    kept_vars = gene_df[(gene_df.allele_freq >= af) &
+                                        (gene_df.alt_depth >= d) &
+                                        (gene_df.impact_severity.isin(["MED", "HIGH"]))]
+                    print "%s\t%0.2f\t%i\t%i\t%i\t%0.2f" % (gene, af, d, len(kept_vars), len(kept_vars["sample"].unique()), len(kept_vars["sample"].unique())/float(num_samples))
+                    x.append(af)
+                    y.append(d)
+                    s.append(len(kept_vars["sample"].unique())/float(num_samples))
+                mark = axes.plot(x, s)
+            browser.show(canvas)
+
+    elif operation == "augmented_to_somatic":
+        # Go from augmentd variants to somatic.
+
+        # TODO: not finished.
+        pass
+
+        # # Read results into dataframe.
+        # results_df = gem_ops.convert_cols( pd.read_csv(results_file, sep="\t") )
+        #
+        # # Apply filtering criteria:
+        # results_df = results_df[(results_df.HP < 5) & (results_df.rmsk == "None") & results_df.allele_freq >= 0.02 ]
+
+
+    # elif operation == "find_somatic":
+    #     # Get somatic variants at the individual sample level.
+    #
+    #     # Get samples to process.
+    #     samples = [sample for sample in gem_ops.get_samples(gemini_db) if re.search(sample_pattern, sample) > 0]
+    #
+    #
+    #     all_somatic_df = get_variants_in_samples(gemini_db, samples, annotations, min_allele_freq, min_alt_depth, min_depth, somatic=True)
+    #
+    #     # Write results to file.
+    #     if sample_pattern == ".*":
+    #         sample_pattern = "all"
+    #     out_filename = "find_somatic_results_%s_minaf%.2f_ad%i_d%i.txt" % (sample_pattern, min_allele_freq, min_alt_depth, min_depth)
+    #     out_file = open(out_filename, "w")
+    #     out_file.write( all_somatic_df.to_csv(sep="\t", index=False, float_format='%.3f') )
+    #     out_file.close()

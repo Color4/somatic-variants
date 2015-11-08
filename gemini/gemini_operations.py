@@ -14,8 +14,8 @@ from gemini import GeminiQuery
 
 # Default list of columns to include in query.
 DEFAULT_VAR_COLS = ["variant_id", "type", "gene", "chrom", "start", "ref", "alt", "HP", "num_het", \
-                    "max_aaf_all", "impact", "impact_severity", "cosmic_ids", "rs_ids", \
-                    "sift_pred", "polyphen_pred", "biotype", "vep_hgvsc", "vep_hgvsp"]
+                    "max_aaf_all", "impact", "impact_severity", "rmsk", "cosmic_ids", "rs_ids", \
+                    "sift_pred", "polyphen_pred", "biotype", "is_edge"]
 INT_COLS = ["variant_id", "start", "HP", "num_het", "alt_depth", "depth", "TCGA_RCC"]
 FLOAT_COLS = ["allele_freq", "max_aaf_all"]
 COMMON_DATABASES = ["1kg", "exac", "esp"]
@@ -229,21 +229,20 @@ def get_genotypes_df(gemini_db, annotations, no_common=True, min_alt_depth=5, mi
 
     return df
 
-def get_vars_in_sample(gemini_db, annotations, sample_name, no_common=True, min_alt_depth=5, min_depth=50, min_allele_freq=0.05):
+def get_vars_in_sample(gemini_db, annotations, sample_name, no_common=True, min_alt_depth=5, min_depth=50, min_allele_freq=0.05, max_aaf_all=0.01):
     """
     Returns a dataframe of all variants in single sample.
     """
 
     # Get variants using lower allele frequency to ensure all relevant variants are fetched.
     cols = DEFAULT_VAR_COLS + annotations
-    query = "SELECT %(cols)s, gts.%(sample)s, gt_alt_depths.%(sample)s, gt_depths.%(sample)s, gt_quals.%(sample)s FROM variants" % { 'cols': ','.join(cols), 'sample': sample_name }
+    query = "SELECT %(cols)s, gts.%(sample)s, gt_alt_depths.%(sample)s, gt_depths.%(sample)s, gt_quals.%(sample)s FROM variants WHERE max_aaf_all <= %(max_aaf_all)f" % \
+            { 'cols': ','.join(cols), 'sample': sample_name, 'max_aaf_all': max_aaf_all }
     gt_filter = "( gt_quals.%(sample)s >= %(min_af)f AND \
                    gt_alt_depths.%(sample)s >= %(min_alt_depth)i AND \
                    gt_depths.%(sample)s >= %(min_depth)i AND \
                    (gt_types.%(sample)s == HET OR gt_types.%(sample)s == HOM_ALT) )" \
                    % { 'sample': sample_name, 'min_af': min_allele_freq, 'min_alt_depth': min_alt_depth, 'min_depth': min_depth }
-    if no_common:
-        query += " WHERE max_aaf_all < 0.01"
 
     all_vars = get_query_results(gemini_db, query, gt_filter=gt_filter, as_dataframe=True).convert_objects(convert_numeric=True)
 
@@ -399,6 +398,16 @@ def clear_genotypes(vars_df, samples, match_fn=None):
 
     return vars_df
 
+def update_mean_af(var_sample_df):
+    """
+    Update mean_af column in dataframe to reflect the mean allele frequency of each variant.
+    """
+
+    for name, group in var_sample_df.groupby("variant_id"):
+        var_sample_df.loc[group.index, 'mean_af'] = group["allele_freq"].mean()
+
+    return var_sample_df
+
 def update_num_het(var_sample_df):
     """
     Update num_het column in dataframe to reflect the number of occurences of the variant
@@ -422,6 +431,43 @@ def update_num_het_by_id(var_sample_df):
 
     return var_sample_df
 
+def update_germline(df, min_heterzygous_af=0.45, max_heterozygous_af=0.55, min_homozygous_af=0.8):
+    """
+    Update germline column in dataframe to true if allele frequency meets or exceeds given AF.
+    """
+
+    # Get IDs with a normal sample.
+    ids_with_normal = df[df.tissue == "N"]["id"].unique()
+
+    # Clear germline attribute.
+    df["germline"] = False
+
+    # Set germline attribute by looking at allele frequencies in normal sample.
+    for (id, variant_id), vars in df.groupby(["id", "variant_id"]):
+        if id not in ids_with_normal:
+            # TODO: could look at allele frequency in tumor/serum and label as germline.
+            continue
+
+        normal = vars[vars.tissue == "N"]
+        if not normal.empty:
+            # There may be multiple normals.
+            # TODO: what if variant is in one normal but not a replicate normal?
+            if len(normal) == 1:
+                af = float(normal.allele_freq)
+            else:
+                af = normal.allele_freq.mean()
+            if (af >= min_heterzygous_af and af <= max_heterozygous_af) or af >= min_homozygous_af:
+                df.loc[vars.index, "germline"] = True
+
+
+    # OLD CODE that only looked at allele frequency.
+    # def is_germline(row):
+    #     af = row.allele_freq
+    #     return (af >= min_heterzygous_af and af <= max_heterozygous_af) or af >= min_homozygous_af
+    #
+    # var_sample_df["germline"] = False
+    # var_sample_df["germline"] = var_sample_df.apply(is_germline, axis=1)
+    return df
 
 def reduce_to_somatic(vars_df):
     """
